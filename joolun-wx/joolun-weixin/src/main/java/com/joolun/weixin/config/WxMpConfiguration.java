@@ -44,17 +44,25 @@ public class WxMpConfiguration {
     private final UnsubscribeHandler unsubscribeHandler;
     private final SubscribeHandler subscribeHandler;
     private final ScanHandler scanHandler;
-    private final WxMpProperties properties;
+    private final WxRuntimeConfigService runtimeConfigService;
 
     @Bean
     public WxMpService wxMpService() {
         // 代码里 getConfigs()处报错的同学，请注意仔细阅读项目说明，你的IDE需要引入lombok插件！！！！
-        final List<WxMpProperties.MpConfig> configs = this.properties.getConfigs();
+        WxMpService service = new WxMpServiceImpl();
+        refresh(service);
+        return service;
+    }
+
+    /**
+     * 重新加载公众号配置，使后台修改无需重启即可生效。
+     */
+    public synchronized void refresh(WxMpService service) {
+        final List<WxMpProperties.MpConfig> configs = runtimeConfigService.getMpConfigs();
         if (configs == null) {
             throw new RuntimeException("大哥，拜托先看下项目首页的说明（readme文件），添加下相关配置，注意别配错了！");
         }
 
-        WxMpService service = new WxMpServiceImpl();
         service.setMultiConfigStorages(configs
                 .stream().map(a -> {
                     WxMpDefaultConfigImpl configStorage = new WxMpDefaultConfigImpl();
@@ -64,7 +72,6 @@ public class WxMpConfiguration {
                     configStorage.setAesKey(a.getAesKey());
                     return configStorage;
                 }).collect(Collectors.toMap(WxMpDefaultConfigImpl::getAppId, a -> a, (o, n) -> o)));
-        return service;
     }
 
     @Bean

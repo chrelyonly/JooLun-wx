@@ -103,6 +103,19 @@ export function putObj(obj) {
 }
 
 /**
+ * 手动补偿同步微信发货信息。
+ *
+ * @param {string} id 订单主键
+ * @returns {Promise}
+ */
+export function syncShipping(id) {
+  return request({
+    url: "/orderinfo/syncShipping/" + id,
+    method: "put",
+  });
+}
+
+/**
  * 修改订单价格。
  *
  * @param {Object} obj 调价参数

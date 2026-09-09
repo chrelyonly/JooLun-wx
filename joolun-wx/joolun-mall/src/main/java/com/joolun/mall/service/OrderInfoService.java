@@ -9,7 +9,7 @@ package com.joolun.mall.service;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
-import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyResult;
+import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyV3Result;
 import com.joolun.mall.dto.PlaceOrderDTO;
 import com.joolun.mall.entity.OrderInfo;
 import com.joolun.mall.entity.OrderItem;
@@ -75,8 +75,9 @@ public interface OrderInfoService extends IService<OrderInfo> {
 	void doOrderRefunds(OrderItem orderItem);
 
 	/**
-	 * 退款回调
-	 * @param notifyResult
+	 * 处理微信支付 API v3 退款回调。
+	 *
+	 * @param notifyResult 已验签并解密的退款结果
 	 */
-	void notifyRefunds(WxPayRefundNotifyResult notifyResult);
+	void notifyRefundsV3(WxPayRefundNotifyV3Result.DecryptNotifyResult notifyResult);
 }

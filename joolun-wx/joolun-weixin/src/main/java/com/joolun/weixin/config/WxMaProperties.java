@@ -51,14 +51,26 @@ public class WxMaProperties {
          * 微信支付商户号
          */
         private String mchId;
+
         /**
-         * 微信支付商户密钥
+         * 微信支付 API v3 密钥。
          */
-        private String mchKey;
+        private String apiV3Key;
+
         /**
-         * p12证书的位置，可以指定绝对路径，也可以指定类路径（以classpath:开头）
+         * 商户 API PKCS#12 证书路径，证书密码为商户号。
          */
-        private String keyPath;
+        private String pkcs12Path;
+
+        /**
+         * 微信支付公钥 ID（公钥模式）。
+         */
+        private String publicKeyId;
+
+        /**
+         * 微信支付公钥 pub_key.pem 路径（公钥模式）。
+         */
+        private String publicKeyPath;
     }
 
 }

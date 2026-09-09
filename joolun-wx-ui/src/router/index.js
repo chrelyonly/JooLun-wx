@@ -48,6 +48,16 @@ export const constantRoutes = [
     hidden: true
   },
   {
+    path: '/wxmp/wxoperations',
+    redirect: '/wxmp/template-message',
+    hidden: true
+  },
+  {
+    path: '/wxma/wxoperations',
+    redirect: '/wxma/subscribe-message',
+    hidden: true
+  },
+  {
     path: "/:pathMatch(.*)*",
     component: () => import('@/views/error/404'),
     hidden: true

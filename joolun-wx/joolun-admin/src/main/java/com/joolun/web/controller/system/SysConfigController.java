@@ -21,6 +21,7 @@ import com.joolun.common.enums.BusinessType;
 import com.joolun.common.utils.poi.ExcelUtil;
 import com.joolun.system.domain.SysConfig;
 import com.joolun.system.service.ISysConfigService;
+import com.joolun.weixin.constant.WxConfigKeyConstants;
 
 /**
  * 参数配置 信息操作处理
@@ -31,6 +32,8 @@ import com.joolun.system.service.ISysConfigService;
 @RequestMapping("/system/config")
 public class SysConfigController extends BaseController
 {
+    private static final String SENSITIVE_VALUE_MASK = "******";
+
     @Autowired
     private ISysConfigService configService;
 
@@ -43,6 +46,7 @@ public class SysConfigController extends BaseController
     {
         startPage();
         List<SysConfig> list = configService.selectConfigList(config);
+        list.forEach(this::maskSensitiveValue);
         return getDataTable(list);
     }
 
@@ -52,6 +56,7 @@ public class SysConfigController extends BaseController
     public void export(HttpServletResponse response, SysConfig config)
     {
         List<SysConfig> list = configService.selectConfigList(config);
+        list.forEach(this::maskSensitiveValue);
         ExcelUtil<SysConfig> util = new ExcelUtil<SysConfig>(SysConfig.class);
         util.exportExcel(response, list, "参数数据");
     }
@@ -63,7 +68,9 @@ public class SysConfigController extends BaseController
     @GetMapping(value = "/{configId}")
     public AjaxResult getInfo(@PathVariable Long configId)
     {
-        return success(configService.selectConfigById(configId));
+        SysConfig config = configService.selectConfigById(configId);
+        maskSensitiveValue(config);
+        return success(config);
     }
 
     /**
@@ -72,6 +79,10 @@ public class SysConfigController extends BaseController
     @GetMapping(value = "/configKey/{configKey}")
     public AjaxResult getConfigKey(@PathVariable String configKey)
     {
+        if (WxConfigKeyConstants.isSensitive(configKey))
+        {
+            return error("敏感配置不支持通过通用参数接口读取");
+        }
         return success(configService.selectConfigByKey(configKey));
     }
 
@@ -79,10 +90,14 @@ public class SysConfigController extends BaseController
      * 新增参数配置
      */
     @PreAuthorize("@ss.hasPermi('system:config:add')")
-    @Log(title = "参数管理", businessType = BusinessType.INSERT)
+    @Log(title = "参数管理", businessType = BusinessType.INSERT, excludeParamNames = {"configValue"})
     @PostMapping
     public AjaxResult add(@Validated @RequestBody SysConfig config)
     {
+        if (WxConfigKeyConstants.isSensitive(config.getConfigKey()))
+        {
+            return error("微信敏感配置请在微信账号配置页面维护");
+        }
         if (!configService.checkConfigKeyUnique(config))
         {
             return error("新增参数'" + config.getConfigName() + "'失败，参数键名已存在");
@@ -95,10 +110,14 @@ public class SysConfigController extends BaseController
      * 修改参数配置
      */
     @PreAuthorize("@ss.hasPermi('system:config:edit')")
-    @Log(title = "参数管理", businessType = BusinessType.UPDATE)
+    @Log(title = "参数管理", businessType = BusinessType.UPDATE, excludeParamNames = {"configValue"})
     @PutMapping
     public AjaxResult edit(@Validated @RequestBody SysConfig config)
     {
+        if (WxConfigKeyConstants.isSensitive(config.getConfigKey()))
+        {
+            return error("微信敏感配置请在微信账号配置页面维护");
+        }
         if (!configService.checkConfigKeyUnique(config))
         {
             return error("修改参数'" + config.getConfigName() + "'失败，参数键名已存在");
@@ -129,5 +148,13 @@ public class SysConfigController extends BaseController
     {
         configService.resetConfigCache();
         return success();
+    }
+
+    private void maskSensitiveValue(SysConfig config)
+    {
+        if (config != null && WxConfigKeyConstants.isSensitive(config.getConfigKey()))
+        {
+            config.setConfigValue(SENSITIVE_VALUE_MASK);
+        }
     }
 }

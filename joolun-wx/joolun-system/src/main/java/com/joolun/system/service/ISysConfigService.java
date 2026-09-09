@@ -58,6 +58,18 @@ public interface ISysConfigService
     public int updateConfig(SysConfig config);
 
     /**
+     * 按参数键名新增或更新参数配置
+     *
+     * @param configKey 参数键名
+     * @param configValue 参数值
+     * @param configName 参数名称
+     * @param username 操作人
+     * @param remark 备注
+     * @return 结果
+     */
+    public int saveConfigByKey(String configKey, String configValue, String configName, String username, String remark);
+
+    /**
      * 批量删除参数信息
      * 
      * @param configIds 需要删除的参数ID

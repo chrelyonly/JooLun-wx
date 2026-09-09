@@ -11,15 +11,18 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.github.binarywang.wxpay.bean.notify.WxPayNotifyResponse;
-import com.github.binarywang.wxpay.bean.notify.WxPayOrderNotifyResult;
-import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyResult;
-import com.github.binarywang.wxpay.bean.request.WxPayUnifiedOrderRequest;
+import com.github.binarywang.wxpay.bean.notify.SignatureHeader;
+import com.github.binarywang.wxpay.bean.notify.WxPayNotifyV3Response;
+import com.github.binarywang.wxpay.bean.notify.WxPayNotifyV3Result;
+import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyV3Result;
+import com.github.binarywang.wxpay.bean.request.WxPayUnifiedOrderV3Request;
+import com.github.binarywang.wxpay.bean.result.WxPayUnifiedOrderV3Result;
+import com.github.binarywang.wxpay.bean.result.enums.TradeTypeEnum;
 import com.github.binarywang.wxpay.exception.WxPayException;
 import com.github.binarywang.wxpay.service.WxPayService;
 import com.joolun.common.core.domain.AjaxResult;
 import com.joolun.mall.config.CommonConstants;
-import com.joolun.mall.config.MallConfigProperties;
+import com.joolun.mall.config.MallRuntimeConfigService;
 import com.joolun.mall.constant.MallConstants;
 import com.joolun.mall.dto.PlaceOrderDTO;
 import com.joolun.mall.entity.MallUser;
@@ -33,8 +36,6 @@ import com.joolun.mall.service.OrderOperateLogService;
 import com.joolun.web.api.support.MallUserSessionService;
 import com.joolun.weixin.config.WxPayConfiguration;
 import com.joolun.weixin.constant.MyReturnCode;
-import com.joolun.weixin.utils.LocalDateTimeUtils;
-import com.joolun.weixin.utils.WxMaUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.AllArgsConstructor;
@@ -43,6 +44,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -63,7 +65,7 @@ public class OrderInfoApi {
 	private final MallUserService mallUserService;
 	private final OrderOperateLogService orderOperateLogService;
 	private final MallUserSessionService mallUserSessionService;
-	private final MallConfigProperties mallConfigProperties;
+	private final MallRuntimeConfigService mallRuntimeConfigService;
 
 	/**
 	 * 分页查询当前用户订单列表。
@@ -184,7 +186,7 @@ public class OrderInfoApi {
 	 * @throws WxPayException 微信支付异常
 	 */
 	@PostMapping("/unifiedOrder")
-	public AjaxResult unifiedOrder(HttpServletRequest request, @RequestBody OrderInfo orderInfo) throws WxPayException {
+	public AjaxResult unifiedOrder(@RequestBody OrderInfo orderInfo) throws WxPayException {
 		String currentMallUserId = mallUserSessionService.getCurrentMallUserId();
 
 		orderInfo = orderInfoService.getById(orderInfo.getId());
@@ -200,48 +202,66 @@ public class OrderInfoApi {
 			return AjaxResult.success();
 		}
 
-		String appId = WxMaUtil.getAppId(request);
-		WxPayUnifiedOrderRequest wxPayUnifiedOrderRequest = new WxPayUnifiedOrderRequest();
-		wxPayUnifiedOrderRequest.setAppid(appId);
-		String body = orderInfo.getName();
-		body = body.length() > 40 ? body.substring(0, 39) : body;
-		wxPayUnifiedOrderRequest.setBody(body);
-		wxPayUnifiedOrderRequest.setOutTradeNo(orderInfo.getOrderNo());
-		wxPayUnifiedOrderRequest.setTotalFee(orderInfo.getPaymentPrice().multiply(new BigDecimal(100)).intValue());
-		wxPayUnifiedOrderRequest.setTradeType("JSAPI");
-		wxPayUnifiedOrderRequest.setNotifyUrl(mallConfigProperties.getNotifyHost() + "/weixin/api/ma/orderinfo/notify-order");
-		wxPayUnifiedOrderRequest.setSpbillCreateIp("127.0.0.1");
-		wxPayUnifiedOrderRequest.setOpenid(mallUserSessionService.getCurrentOpenId());
 		WxPayService wxPayService = WxPayConfiguration.getPayService();
-		return AjaxResult.success(JSONUtil.parse(wxPayService.createOrder(wxPayUnifiedOrderRequest)));
+		WxPayUnifiedOrderV3Request wxPayUnifiedOrderRequest = new WxPayUnifiedOrderV3Request();
+		wxPayUnifiedOrderRequest.setAppid(wxPayService.getConfig().getAppId());
+		wxPayUnifiedOrderRequest.setMchid(wxPayService.getConfig().getMchId());
+		String body = StrUtil.maxLength(StrUtil.blankToDefault(orderInfo.getName(), "商城订单"), 120);
+		wxPayUnifiedOrderRequest.setDescription(body);
+		wxPayUnifiedOrderRequest.setOutTradeNo(orderInfo.getOrderNo());
+		wxPayUnifiedOrderRequest.setNotifyUrl(mallRuntimeConfigService.getNotifyHost() + "/weixin/api/ma/orderinfo/notify-order");
+		WxPayUnifiedOrderV3Request.Amount amount = new WxPayUnifiedOrderV3Request.Amount();
+		amount.setTotal(orderInfo.getPaymentPrice().movePointRight(2).intValueExact());
+		amount.setCurrency("CNY");
+		wxPayUnifiedOrderRequest.setAmount(amount);
+		WxPayUnifiedOrderV3Request.Payer payer = new WxPayUnifiedOrderV3Request.Payer();
+		payer.setOpenid(mallUserSessionService.getCurrentOpenId());
+		wxPayUnifiedOrderRequest.setPayer(payer);
+		WxPayUnifiedOrderV3Result.JsapiResult payInfo = wxPayService.createOrderV3(TradeTypeEnum.JSAPI, wxPayUnifiedOrderRequest);
+		return AjaxResult.success(payInfo);
 	}
 
 	/**
 	 * 支付回调。
 	 *
-	 * @param xmlData 回调报文
+	 * @param notifyData API v3 回调报文
 	 * @return 回调处理结果
 	 * @throws WxPayException 微信支付异常
 	 */
 	@PostMapping("/notify-order")
-	public String notifyOrder(@RequestBody String xmlData) throws WxPayException {
-		log.info("支付回调:{}", xmlData);
-		WxPayService wxPayService = WxPayConfiguration.getPayService();
-		WxPayOrderNotifyResult notifyResult = wxPayService.parseOrderNotifyResult(xmlData);
-		OrderInfo orderInfo = orderInfoService.getOne(Wrappers.<OrderInfo>lambdaQuery()
-				.eq(OrderInfo::getOrderNo, notifyResult.getOutTradeNo()));
-		if (orderInfo != null) {
-			if (orderInfo.getPaymentPrice().multiply(new BigDecimal(100)).intValue() == notifyResult.getTotalFee()) {
-				String timeEnd = notifyResult.getTimeEnd();
-				LocalDateTime paymentTime = LocalDateTimeUtils.parse(timeEnd);
-				orderInfo.setPaymentTime(paymentTime);
-				orderInfo.setTransactionId(notifyResult.getTransactionId());
-				orderInfoService.notifyOrder(orderInfo);
-				return WxPayNotifyResponse.success("成功");
+	public String notifyOrder(@RequestBody String notifyData,
+			@RequestHeader("Wechatpay-Timestamp") String timestamp,
+			@RequestHeader("Wechatpay-Nonce") String nonce,
+			@RequestHeader("Wechatpay-Signature") String signature,
+			@RequestHeader("Wechatpay-Serial") String serial) {
+		try {
+			WxPayService wxPayService = WxPayConfiguration.getPayService();
+			WxPayNotifyV3Result notifyResult = wxPayService.parseOrderNotifyV3Result(notifyData,
+					buildSignatureHeader(timestamp, nonce, signature, serial));
+			WxPayNotifyV3Result.DecryptNotifyResult result = notifyResult.getResult();
+			if (!"SUCCESS".equals(result.getTradeState())
+					|| !wxPayService.getConfig().getAppId().equals(result.getAppid())
+					|| !wxPayService.getConfig().getMchId().equals(result.getMchid())) {
+				return WxPayNotifyV3Response.fail("支付状态或商户信息不匹配");
 			}
-			return WxPayNotifyResponse.fail("付款金额与订单金额不一致");
+			OrderInfo orderInfo = orderInfoService.getOne(Wrappers.<OrderInfo>lambdaQuery()
+					.eq(OrderInfo::getOrderNo, result.getOutTradeNo()));
+			if (orderInfo == null) {
+				return WxPayNotifyV3Response.fail("无此订单");
+			}
+			int expectedAmount = orderInfo.getPaymentPrice().movePointRight(2).intValueExact();
+			if (result.getAmount() == null || result.getAmount().getTotal() == null
+					|| result.getAmount().getTotal() != expectedAmount) {
+				return WxPayNotifyV3Response.fail("付款金额与订单金额不一致");
+			}
+			orderInfo.setPaymentTime(OffsetDateTime.parse(result.getSuccessTime()).toLocalDateTime());
+			orderInfo.setTransactionId(result.getTransactionId());
+			orderInfoService.notifyOrder(orderInfo);
+			return WxPayNotifyV3Response.success("成功");
+		} catch (Exception e) {
+			log.error("处理微信支付 API v3 回调失败", e);
+			return WxPayNotifyV3Response.fail(e.getMessage());
 		}
-		return WxPayNotifyResponse.fail("无此订单");
 	}
 
 	/**
@@ -328,21 +348,38 @@ public class OrderInfoApi {
 	/**
 	 * 退款回调。
 	 *
-	 * @param xmlData 回调报文
+	 * @param notifyData API v3 回调报文
 	 * @return 回调结果
 	 */
 	@PostMapping("/notify-refunds")
-	public String notifyRefunds(@RequestBody String xmlData) {
-		log.info("退款回调:{}", xmlData);
+	public String notifyRefunds(@RequestBody String notifyData,
+			@RequestHeader("Wechatpay-Timestamp") String timestamp,
+			@RequestHeader("Wechatpay-Nonce") String nonce,
+			@RequestHeader("Wechatpay-Signature") String signature,
+			@RequestHeader("Wechatpay-Serial") String serial) {
 		WxPayService wxPayService = WxPayConfiguration.getPayService();
 		try {
-			WxPayRefundNotifyResult notifyResult = wxPayService.parseRefundNotifyResult(xmlData);
-			orderInfoService.notifyRefunds(notifyResult);
-			return WxPayNotifyResponse.success("成功");
+			WxPayRefundNotifyV3Result notifyResult = wxPayService.parseRefundNotifyV3Result(notifyData,
+					buildSignatureHeader(timestamp, nonce, signature, serial));
+			if (notifyResult.getResult() == null
+					|| !wxPayService.getConfig().getMchId().equals(notifyResult.getResult().getMchid())) {
+				return WxPayNotifyV3Response.fail("退款回调商户信息不匹配");
+			}
+			orderInfoService.notifyRefundsV3(notifyResult.getResult());
+			return WxPayNotifyV3Response.success("成功");
 		} catch (Exception e) {
-			e.printStackTrace();
-			return WxPayNotifyResponse.fail(e.getMessage());
+			log.error("处理微信退款 API v3 回调失败", e);
+			return WxPayNotifyV3Response.fail(e.getMessage());
 		}
+	}
+
+	private SignatureHeader buildSignatureHeader(String timestamp, String nonce, String signature, String serial) {
+		return SignatureHeader.builder()
+				.timeStamp(timestamp)
+				.nonce(nonce)
+				.signature(signature)
+				.serial(serial)
+				.build();
 	}
 
 	/**

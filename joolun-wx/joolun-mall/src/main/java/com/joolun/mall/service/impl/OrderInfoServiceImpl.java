@@ -14,12 +14,12 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyResult;
-import com.github.binarywang.wxpay.bean.request.WxPayRefundRequest;
+import com.github.binarywang.wxpay.bean.notify.WxPayRefundNotifyV3Result;
+import com.github.binarywang.wxpay.bean.request.WxPayRefundV3Request;
 import com.github.binarywang.wxpay.exception.WxPayException;
 import com.github.binarywang.wxpay.service.WxPayService;
 import com.joolun.mall.config.CommonConstants;
-import com.joolun.mall.config.MallConfigProperties;
+import com.joolun.mall.config.MallRuntimeConfigService;
 import com.joolun.mall.constant.MallConstants;
 import com.joolun.mall.dto.PlaceOrderDTO;
 import com.joolun.mall.dto.PlaceOrderGoodsDTO;
@@ -56,6 +56,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -86,7 +87,7 @@ public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo
 	private final OrderItemService orderItemService;
 	private final OrderLogisticsService orderLogisticsService;
 	private final OrderOperateLogService orderOperateLogService;
-	private final MallConfigProperties mallConfigProperties;
+	private final MallRuntimeConfigService mallRuntimeConfigService;
 	private final MallGoodsSkuSupport mallGoodsSkuSupport;
 	private final MallTradeConfigService mallTradeConfigService;
 
@@ -325,8 +326,16 @@ public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo
 		// 支付回调只负责补记支付态和 SPU 销量。
 		// SKU 库存在提交订单时已经完成扣减，这里不再重复处理。
 		if (CommonConstants.NO.equals(orderInfo.getIsPay())) {
-			orderInfo.setIsPay(CommonConstants.YES);
-			orderInfo.setStatus(OrderInfoEnum.STATUS_1.getValue());
+			boolean changed = update(Wrappers.<OrderInfo>lambdaUpdate()
+					.eq(OrderInfo::getId, orderInfo.getId())
+					.eq(OrderInfo::getIsPay, CommonConstants.NO)
+					.set(OrderInfo::getIsPay, CommonConstants.YES)
+					.set(OrderInfo::getStatus, OrderInfoEnum.STATUS_1.getValue())
+					.set(OrderInfo::getPaymentTime, orderInfo.getPaymentTime())
+					.set(OrderInfo::getTransactionId, orderInfo.getTransactionId()));
+			if (!changed) {
+				return;
+			}
 			List<OrderItem> listOrderItem = orderItemService.list(Wrappers.<OrderItem>lambdaQuery()
 					.eq(OrderItem::getOrderId, orderInfo.getId()));
 			Map<String, List<OrderItem>> resultList = listOrderItem.stream().collect(Collectors.groupingBy(OrderItem::getSpuId));
@@ -335,7 +344,6 @@ public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo
 				resultList.get(goodsSpu.getId()).forEach(orderItem -> goodsSpu.setSaleNum(goodsSpu.getSaleNum() + orderItem.getQuantity()));
 				goodsSpuService.updateById(goodsSpu);
 			});
-			baseMapper.updateById(orderInfo);
 			mallUserService.recordConsume(orderInfo.getUserId(), orderInfo.getPaymentPrice());
 			orderOperateLogService.saveOperateLog(orderInfo.getId(), null, "PAY_SUCCESS", "订单支付成功",
 					"系统已确认支付成功，支付金额 " + defaultDecimal(orderInfo.getPaymentPrice(), BigDecimal.ZERO) + " 元，支付流水号："
@@ -375,15 +383,19 @@ public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo
 			LocalDateTime now = LocalDateTime.now();
 			String auditRemark = StrUtil.trim(orderItem.getRefundAuditRemark());
 			if ("3".equals(orderItem.getStatus())) {
-				WxPayRefundRequest request = new WxPayRefundRequest();
+				WxPayRefundV3Request request = new WxPayRefundV3Request();
 				request.setTransactionId(orderInfo.getTransactionId());
 				request.setOutRefundNo(orderItem2.getId());
-				request.setTotalFee(orderItem2.getPaymentPrice().multiply(new BigDecimal(100)).intValue());
-				request.setRefundFee(orderItem2.getPaymentPrice().multiply(new BigDecimal(100)).intValue());
-				request.setNotifyUrl(mallConfigProperties.getNotifyHost() + "/weixin/api/ma/orderinfo/notify-refunds");
+				request.setReason(StrUtil.blankToDefault(orderItem2.getRefundReason(), "用户申请退款"));
+				request.setNotifyUrl(mallRuntimeConfigService.getNotifyHost() + "/weixin/api/ma/orderinfo/notify-refunds");
+				WxPayRefundV3Request.Amount amount = new WxPayRefundV3Request.Amount();
+				amount.setTotal(orderInfo.getPaymentPrice().movePointRight(2).intValueExact());
+				amount.setRefund(orderItem2.getPaymentPrice().movePointRight(2).intValueExact());
+				amount.setCurrency("CNY");
+				request.setAmount(amount);
 				WxPayService wxPayService = WxPayConfiguration.getPayService();
 				try {
-					wxPayService.refund(request);
+					wxPayService.refundV3(request);
 					orderItem2.setStatus(orderItem.getStatus());
 					orderItem2.setRefundAuditRemark(StrUtil.blankToDefault(auditRemark, "后台审核通过，已发起退款"));
 					orderItem2.setRefundAuditTime(now);
@@ -409,29 +421,66 @@ public class OrderInfoServiceImpl extends ServiceImpl<OrderInfoMapper, OrderInfo
 
 	@Override
 	@Transactional(rollbackFor = Exception.class)
-	public void notifyRefunds(WxPayRefundNotifyResult notifyResult) {
-		OrderItem orderItem = orderItemService.getById(notifyResult.getReqInfo().getOutRefundNo());
-		if (orderItem == null) {
+	public void notifyRefundsV3(WxPayRefundNotifyV3Result.DecryptNotifyResult notifyResult) {
+		if (notifyResult == null) {
+			throw new IllegalArgumentException("退款回调内容为空");
+		}
+		if (!"SUCCESS".equals(notifyResult.getRefundStatus())) {
 			return;
 		}
-		OrderInfo orderInfo = baseMapper.selectById(orderItem.getOrderId());
-		if ("3".equals(orderItem.getStatus()) && CommonConstants.NO.equals(orderItem.getIsRefund())) {
-			orderItem.setIsRefund(CommonConstants.YES);
-			orderItem.setRefundSuccessTime(LocalDateTime.now());
-			orderInfo.setStatus(OrderInfoEnum.STATUS_5.getValue());
-			orderItemService.updateById(orderItem);
-			baseMapper.updateById(orderInfo);
-			mallUserService.recordRefund(orderInfo.getUserId());
-			orderOperateLogService.saveOperateLog(orderInfo.getId(), orderItem.getId(), "REFUND_SUCCESS", "退款成功",
-					"系统已完成退款回调，退款金额 " + defaultDecimal(orderItem.getPaymentPrice(), BigDecimal.ZERO) + " 元",
-					"SYSTEM", "0", "退款回调", null);
-			saveMallUserAfterSaleOperateLog(orderInfo.getUserId(), "REFUND_SUCCESS", "退款到账完成",
-					"订单 " + StrUtil.blankToDefault(orderInfo.getOrderNo(), "未记录")
-							+ " 的退款已回调成功，退款金额 "
-							+ defaultDecimal(orderItem.getPaymentPrice(), BigDecimal.ZERO)
-							+ " 元，系统已确认到账。", "退款回调",
-					buildMallUserOperateExtraInfo(orderInfo, orderItem));
+		completeRefund(notifyResult);
+	}
+
+	private void completeRefund(WxPayRefundNotifyV3Result.DecryptNotifyResult notifyResult) {
+		OrderItem orderItem = orderItemService.getById(notifyResult.getOutRefundNo());
+		if (orderItem == null) {
+			throw new IllegalArgumentException("退款回调对应的订单项不存在");
 		}
+		OrderInfo orderInfo = baseMapper.selectById(orderItem.getOrderId());
+		if (orderInfo == null) {
+			throw new IllegalArgumentException("退款回调对应的订单不存在");
+		}
+		int expectedTotal = orderInfo.getPaymentPrice().movePointRight(2).intValueExact();
+		int expectedRefund = orderItem.getPaymentPrice().movePointRight(2).intValueExact();
+		if (!orderInfo.getOrderNo().equals(notifyResult.getOutTradeNo())
+				|| (StrUtil.isNotBlank(orderInfo.getTransactionId())
+				&& !orderInfo.getTransactionId().equals(notifyResult.getTransactionId()))
+				|| notifyResult.getAmount() == null
+				|| notifyResult.getAmount().getTotal() == null
+				|| notifyResult.getAmount().getTotal() != expectedTotal
+				|| notifyResult.getAmount().getRefund() == null
+				|| notifyResult.getAmount().getRefund() != expectedRefund) {
+			throw new IllegalArgumentException("退款回调的订单或金额信息不匹配");
+		}
+		if (!CommonConstants.NO.equals(orderItem.getIsRefund())) {
+			return;
+		}
+		LocalDateTime refundSuccessTime = StrUtil.isBlank(notifyResult.getSuccessTime())
+				? LocalDateTime.now() : OffsetDateTime.parse(notifyResult.getSuccessTime()).toLocalDateTime();
+		boolean changed = orderItemService.update(Wrappers.<OrderItem>lambdaUpdate()
+				.eq(OrderItem::getId, orderItem.getId())
+				.eq(OrderItem::getIsRefund, CommonConstants.NO)
+				.set(OrderItem::getStatus, "3")
+				.set(OrderItem::getIsRefund, CommonConstants.YES)
+				.set(OrderItem::getRefundSuccessTime, refundSuccessTime));
+		if (!changed) {
+			return;
+		}
+		boolean fullyRefunded = orderItemService.list(Wrappers.<OrderItem>lambdaQuery()
+				.eq(OrderItem::getOrderId, orderInfo.getId())).stream()
+				.allMatch(item -> CommonConstants.YES.equals(item.getIsRefund()));
+		if (fullyRefunded) {
+			orderInfo.setStatus(OrderInfoEnum.STATUS_5.getValue());
+			baseMapper.updateById(orderInfo);
+		}
+		mallUserService.recordRefund(orderInfo.getUserId());
+		orderOperateLogService.saveOperateLog(orderInfo.getId(), orderItem.getId(), "REFUND_SUCCESS", "退款成功",
+				"系统已完成微信支付 API v3 退款回调，退款金额 " + defaultDecimal(orderItem.getPaymentPrice(), BigDecimal.ZERO) + " 元",
+				"SYSTEM", "0", "退款回调", null);
+		saveMallUserAfterSaleOperateLog(orderInfo.getUserId(), "REFUND_SUCCESS", "退款到账完成",
+				"订单 " + StrUtil.blankToDefault(orderInfo.getOrderNo(), "未记录")
+						+ " 的退款已回调成功，退款金额 " + defaultDecimal(orderItem.getPaymentPrice(), BigDecimal.ZERO) + " 元，系统已确认到账。",
+				"退款回调", buildMallUserOperateExtraInfo(orderInfo, orderItem));
 	}
 
 	/**

@@ -113,6 +113,7 @@
       <el-pagination
         style="margin-top: 20px"
         @size-change="sizeChange"
+        @current-change="currentChange"
         v-model:current-page="page.currentPage"
         :page-sizes="[10, 20]"
         :page-size="page.pageSize"

@@ -5,6 +5,7 @@ import java.util.List;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import com.joolun.common.annotation.DataSource;
 import com.joolun.common.constant.CacheConstants;
 import com.joolun.common.constant.UserConstants;
@@ -146,6 +147,34 @@ public class SysConfigServiceImpl implements ISysConfigService
             redisCache.setCacheObject(getCacheKey(config.getConfigKey()), config.getConfigValue());
         }
         return row;
+    }
+
+    /**
+     * 按参数键名新增或更新参数配置
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int saveConfigByKey(String configKey, String configValue, String configName, String username, String remark)
+    {
+        SysConfig config = configMapper.checkConfigKeyUnique(configKey);
+        if (StringUtils.isNull(config))
+        {
+            config = new SysConfig();
+            config.setConfigKey(configKey);
+            config.setConfigValue(configValue);
+            config.setConfigName(configName);
+            config.setConfigType(UserConstants.YES);
+            config.setCreateBy(username);
+            config.setRemark(remark);
+            return insertConfig(config);
+        }
+
+        config.setConfigValue(configValue);
+        config.setConfigName(configName);
+        config.setConfigType(UserConstants.YES);
+        config.setUpdateBy(username);
+        config.setRemark(remark);
+        return updateConfig(config);
     }
 
     /**

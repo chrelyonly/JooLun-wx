@@ -141,6 +141,7 @@ xss:
   # 匹配链接
   urlPatterns: /system/*,/monitor/*,/tool/*
 
+# 微信配置默认值；后台“系统管理 -> 微信账号配置”保存后由 sys_config 覆盖
 wx:
   # 公众号配置
   mp:
@@ -154,13 +155,21 @@ wx:
     configs:
       - appId: xxxxxxxxxxxxxxxx
         secret: xxxxxxxxxxxxx
+        # 小程序消息推送配置（内容安全异步结果等），在小程序后台配置相同值
+        token: xxxxxxxxxx
+        aesKey: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        msgDataFormat: JSON
         # 微信支付商户号，请去微信支付平台申请
         mchId: 1588227511
-        # 微信支付商户APIv2密钥，请去微信支付平台申请
-        mchKey: xxxxxxxxxxxxxxxxxxxxx
-        # p12证书的位置，绝对路径
-        keyPath: /mnt/install/joolun-wx/apiclient_cert.p12
+        # 微信支付 API v3 密钥
+        apiV3Key: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        # 商户 API PKCS#12 证书，密码为商户号
+        pkcs12Path: /mnt/install/joolun-wx/apiclient_cert.p12
+        # 微信支付公钥模式必填，在商户平台下载 pub_key.pem 并复制对应的公钥 ID
+        publicKeyId:
+        publicKeyPath:
 
+# 商城配置默认值；后台“系统管理 -> 商城配置”保存后由 sys_config 覆盖
 mall:
   # 支付、物流回调地址，即后台服务7500端口的外网访问域名，要保证外网能访问，如：https://后台地址/prod-api
   notify-host: http://xx.xxxx.com

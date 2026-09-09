@@ -25,6 +25,7 @@ import com.joolun.mall.service.OrderInfoService;
 import com.joolun.mall.service.OrderItemService;
 import com.joolun.mall.service.OrderLogisticsService;
 import com.joolun.mall.service.OrderOperateLogService;
+import com.joolun.mall.service.WxOrderShippingSyncService;
 import com.joolun.weixin.constant.MyReturnCode;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -55,6 +56,7 @@ public class OrderInfoController extends BaseController {
 	private final MallUserService mallUserService;
 	private final MallUserOperateLogService mallUserOperateLogService;
 	private final OrderOperateLogService orderOperateLogService;
+	private final WxOrderShippingSyncService wxOrderShippingSyncService;
 
 	/**
 	 * 分页查询订单列表。
@@ -157,8 +159,40 @@ public class OrderInfoController extends BaseController {
 							+ " 完成发货，物流公司：" + orderInfo.getLogistics()
 							+ "，物流单号：" + orderInfo.getLogisticsNo(),
 					buildMallUserOperateExtraInfo(currentOrderInfo, null, "ORDER_SERVICE"));
+			OrderInfo latestOrder = orderInfoService.getById(orderInfo.getId());
+			OrderLogistics latestLogistics = latestOrder == null ? null : orderLogisticsService.getById(latestOrder.getLogisticsId());
+			WxOrderShippingSyncService.SyncResult syncResult = wxOrderShippingSyncService.sync(latestOrder, latestLogistics);
+			if (!syncResult.skipped()) {
+				saveAdminOperateLog(orderInfo.getId(), null,
+						syncResult.success() ? "WX_SHIPPING_SYNC" : "WX_SHIPPING_SYNC_FAILED",
+						syncResult.success() ? "同步微信发货信息" : "微信发货信息同步失败",
+						syncResult.message());
+			}
 		}
 		return AjaxResult.success(result);
+	}
+
+	/**
+	 * 手动补偿同步订单发货信息到微信。
+	 *
+	 * @param id 订单主键
+	 * @return 微信同步结果
+	 */
+	@PutMapping("/syncShipping/{id}")
+	@PreAuthorize("@ss.hasPermi('mall:orderinfo:edit')")
+	public AjaxResult syncShipping(@PathVariable String id) {
+		OrderInfo orderInfo = orderInfoService.getById(id);
+		if (orderInfo == null) {
+			return AjaxResult.error(MyReturnCode.ERR_70005.getCode(), MyReturnCode.ERR_70005.getMsg());
+		}
+		OrderLogistics logistics = StrUtil.isBlank(orderInfo.getLogisticsId())
+				? null : orderLogisticsService.getById(orderInfo.getLogisticsId());
+		WxOrderShippingSyncService.SyncResult result = wxOrderShippingSyncService.sync(orderInfo, logistics);
+		if (!result.success()) {
+			return AjaxResult.error(result.message());
+		}
+		saveAdminOperateLog(id, null, "WX_SHIPPING_SYNC", "手动同步微信发货信息", result.message());
+		return AjaxResult.success(result.message());
 	}
 
 	/**

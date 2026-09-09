@@ -34,14 +34,14 @@ import java.util.stream.Collectors;
 @Configuration
 @EnableConfigurationProperties(WxMaProperties.class)
 public class WxMaConfiguration {
-	private final WxMaProperties properties;
+	private final WxRuntimeConfigService runtimeConfigService;
 
-	private static final Map<String, WxMaMessageRouter> routers = Maps.newHashMap();
-	private static Map<String, WxMaService> maServices;
+	private static volatile Map<String, WxMaMessageRouter> routers = Maps.newHashMap();
+	private static volatile Map<String, WxMaService> maServices = Maps.newHashMap();
 
 	@Autowired
-	public WxMaConfiguration(WxMaProperties properties) {
-		this.properties = properties;
+	public WxMaConfiguration(WxRuntimeConfigService runtimeConfigService) {
+		this.runtimeConfigService = runtimeConfigService;
 	}
 
 	public static WxMaService getMaService(String appId) {
@@ -59,12 +59,20 @@ public class WxMaConfiguration {
 
 	@PostConstruct
 	public void init() {
-		List<WxMaProperties.Config> configs = this.properties.getConfigs();
+		refresh();
+	}
+
+	/**
+	 * 重新加载小程序配置，使后台修改无需重启即可生效。
+	 */
+	public synchronized void refresh() {
+		List<WxMaProperties.Config> configs = runtimeConfigService.getMaConfigs();
 		if (configs == null) {
 			throw new RuntimeException("大哥，拜托先看下项目首页的说明（readme文件），添加下相关配置，注意别配错了！");
 		}
 
-		maServices = configs.stream()
+		Map<String, WxMaMessageRouter> newRouters = Maps.newHashMap();
+		Map<String, WxMaService> newMaServices = configs.stream()
 				.map(a -> {
 					WxMaDefaultConfigImpl config = new WxMaDefaultConfigImpl();
 					// 使用上面的配置时，需要同时引入jedis-lock的依赖，否则会报类无法找到的异常
@@ -76,9 +84,11 @@ public class WxMaConfiguration {
 
 					WxMaService service = new WxMaServiceImpl();
 					service.setWxMaConfig(config);
-					routers.put(a.getAppId(), this.newRouter(service));
+					newRouters.put(a.getAppId(), this.newRouter(service));
 					return service;
 				}).collect(Collectors.toMap(s -> s.getWxMaConfig().getAppid(), a -> a));
+		routers = newRouters;
+		maServices = newMaServices;
 	}
 
 	private WxMaMessageRouter newRouter(WxMaService service) {
